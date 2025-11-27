@@ -1,0 +1,109 @@
+
+pipeline {
+    agent any
+	parameters {
+		stashedFile 'FILE'
+        string(name: 'namespace', defaultValue: 'default', description: 'Namspace name')
+        string(name: 'deployName', defaultValue: 'word-count-streaming-test-jar', description: 'Display name for the deployment')
+        string(name: 'entryClass', defaultValue: 'org.example.WordCountStreaming', description: 'Class Jar')
+        string(name: 'parallelism', defaultValue: '1', description: 'Parallel')
+        string(name: 'numberOfTaskManagers', defaultValue: '1', description: 'Number of Task Managers')
+        string(name: 'job_cpu', defaultValue: '1', description: 'Number of Job Manager CPU')
+        string(name: 'job_mem', defaultValue: '2G', description: 'Job Manager Memory')
+        string(name: 'task_cpu', defaultValue: '1', description: 'Number of Task Manager CPU')
+        string(name: 'task_mem', defaultValue: '2G', description: 'Task Manager Memory')
+		string(name: 'displayName', defaultValue: 'Count_from_jenkins_v2', description: 'Jobs name')
+		
+    }
+    environment {
+        API_URL = "http://10.10.12.102:31109/api/v1/namespaces/${params.namespace}/deployments"
+	}
+	
+    stages {
+        stage('Upload Artifact') {
+            steps {
+                script {
+                    url = "http://10.10.12.102:31109/artifacts/v1/namespaces/${params.namespace}/artifacts:upload"
+                    unstash 'FILE'
+                    sh 'cp FILE $FILE_FILENAME'
+                    echo "$FILE_FILENAME"
+                    def response = sh(script: """ curl -X POST $url  -b 'JSESSIONID=1615A4CD3DFB564A615817E94F8D9F14' -H 'accept: application/json' -F "file=@$FILE_FILENAME" """, returnStdout: true).trim()
+                    
+                    // Parse the JSON response
+                    def jsonResponse = readJSON text: response
+                    echo "$jsonResponse"
+                    def uri = jsonResponse.artifact.uri
+                    echo "$uri"
+                    env.uri_file = uri
+                    // Remove temp file
+                    sh 'rm -f $FILE_FILENAME'
+                }
+            }
+        }
+		
+		stage('Call API') {
+            steps {
+                script {
+                    // Construct the JSON payload dynamically based on input parameters
+                    def jsonPayload = """
+                    {
+                        "spec": {
+                            "deploymentTargetId": null,
+                            "deploymentTargetName": "vvp1",
+                            "sessionClusterName": null,
+                            "template": {
+                            "spec": {
+                                "artifact": {
+                                "jarUri": "${env.uri_file}",
+                                "kind": "JAR",
+                                "additionalDependencies": [
+                                    "${params.dependencies}"
+                                ],
+                                "entryClass": "${params.class}",
+								"flinkImageTag": "1.20.1-stream2-scala_2.12-java17",
+                                "mainArgs": "${params.mainArgs}"
+                                },
+                                "parallelism": "${params.parallelism}",
+                                "numberOfTaskManagers": "${params.numberOfTaskManagers}",
+                                "resources": {
+                                "jobmanager": {
+                                    "cpu": "${params.job_cpu}",
+                                    "memory": "${params.job_mem}"
+                                },
+                                "taskmanager": {
+                                    "cpu": "${params.task_cpu}",
+                                    "memory": "${params.task_mem}"
+                                }
+                                }
+                            }
+                            }
+                        },
+                        "metadata": {
+                            "displayName": "${params.displayName}"
+                        }
+                        }
+                    """
+
+                    // Request to the API
+                    def response = httpRequest(
+                        acceptType: 'APPLICATION_JSON',
+                        contentType: 'APPLICATION_JSON',
+                        httpMode: 'POST',
+                        url: "${env.API_URL}",
+                        requestBody: jsonPayload,
+                        customHeaders: [[
+                            name: 'Authorization',
+                            value: "Bearer afefa3ea-371f-40e3-9c0a-573b91cad571"
+                        ]]
+
+
+                    )
+
+                    // Print the response from the API
+                    echo "API Response: ${response.content}"
+                    env.RESPONSE_STATUS = response.status
+                }
+            }
+        }		
+	}
+}
